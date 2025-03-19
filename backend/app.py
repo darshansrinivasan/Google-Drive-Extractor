@@ -20,7 +20,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",
         "http://localhost:3002",
-        "https://google-drive-extractor.vercel.app"
+        "https://google-drive-extractor.vercel.app",
+        "https://google-drive-scanner-backend.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
