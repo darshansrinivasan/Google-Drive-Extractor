@@ -19,7 +19,9 @@ origins = [
     "http://localhost:3001",
     "http://localhost:3002",
     "https://google-drive-extractor.vercel.app",
-    "https://google-drive-scanner-backend.onrender.com"
+    "https://google-drive-scanner-backend.onrender.com",
+    "http://google-drive-extractor.vercel.app",
+    "http://google-drive-scanner-backend.onrender.com"
 ]
 
 app.add_middleware(
