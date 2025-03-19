@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -67,7 +67,7 @@ def authenticate():
     # Get credentials from environment variables in production
     client_id = os.getenv('GOOGLE_CLIENT_ID')
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
-    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com')
+    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
     
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -79,7 +79,7 @@ def authenticate():
                 # Use environment variables in production
                 flow = InstalledAppFlow.from_client_config(
                     {
-                        "installed": {
+                        "web": {
                             "client_id": client_id,
                             "client_secret": client_secret,
                             "redirect_uris": [redirect_uri],
@@ -87,14 +87,19 @@ def authenticate():
                             "token_uri": "https://oauth2.googleapis.com/token",
                         }
                     },
-                    SCOPES
+                    SCOPES,
+                    redirect_uri=redirect_uri
                 )
+                # Instead of run_local_server, we'll use the redirect flow
+                authorization_url, _ = flow.authorization_url(
+                    access_type='offline',
+                    include_granted_scopes='true'
+                )
+                return authorization_url
             else:
                 # Fall back to credentials file in development
                 flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
+                return flow.run_local_server(port=0)
     return creds
 
 def get_drive_link(file):
@@ -195,6 +200,46 @@ async def download_results(job_id: str):
         media_type="text/csv",
         filename="google_drive_scan.csv"
     )
+
+@app.get("/oauth2callback")
+async def oauth2callback(request: Request):
+    """Handle the OAuth 2.0 callback from Google."""
+    # Get credentials from environment variables
+    client_id = os.getenv('GOOGLE_CLIENT_ID')
+    client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
+    
+    # Get the authorization code from the request
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="No authorization code provided")
+    
+    # Create flow object
+    flow = InstalledAppFlow.from_client_config(
+        {
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uris": [redirect_uri],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        SCOPES,
+        redirect_uri=redirect_uri
+    )
+    
+    # Exchange authorization code for credentials
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    
+    # Save credentials
+    with open(TOKEN_FILE, 'w') as token:
+        token.write(creds.to_json())
+    
+    # Redirect back to frontend
+    frontend_url = "https://google-drive-extractor.vercel.app"
+    return {"url": frontend_url}
 
 # ---------------------------
 # Background Tasks
