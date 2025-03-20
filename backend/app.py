@@ -5,7 +5,7 @@ from pydantic import BaseModel
 import os
 import csv
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -19,9 +19,7 @@ origins = [
     "http://localhost:3001",
     "http://localhost:3002",
     "https://google-drive-extractor.vercel.app",
-    "https://google-drive-scanner-backend.onrender.com",
-    "http://google-drive-extractor.vercel.app",
-    "http://google-drive-scanner-backend.onrender.com"
+    "https://google-drive-scanner-backend.onrender.com"
 ]
 
 app.add_middleware(
@@ -60,52 +58,40 @@ class AuthResponse(BaseModel):
 # Google Drive Functions
 # ---------------------------
 SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly']
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
 
-def authenticate():
-    """Authenticates the user and returns valid credentials or authorization URL."""
-    creds = None
-    
-    # Get credentials from environment variables in production
+def get_oauth_flow():
+    """Create and return OAuth flow object."""
     client_id = os.getenv('GOOGLE_CLIENT_ID')
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
     redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
     
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="Google credentials not configured")
+        
+    return InstalledAppFlow.from_client_config(
+        {
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uris": [redirect_uri],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        SCOPES,
+        redirect_uri=redirect_uri
+    )
+
+def authenticate() -> Dict[str, Any]:
+    """Start the OAuth flow."""
     try:
-        if client_id and client_secret:
-            # Use environment variables in production
-            flow = InstalledAppFlow.from_client_config(
-                {
-                    "web": {
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "redirect_uris": [redirect_uri],
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                    }
-                },
-                SCOPES,
-                redirect_uri=redirect_uri
-            )
-            # Instead of run_local_server, we'll use the redirect flow
-            authorization_url, _ = flow.authorization_url(
-                access_type='offline',
-                include_granted_scopes='true'
-            )
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "message": "Authentication required",
-                    "authorization_url": authorization_url
-                }
-            )
-        else:
-            raise HTTPException(status_code=500, detail="Google credentials not configured")
-            
+        flow = get_oauth_flow()
+        authorization_url, _ = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+        return {"authorization_url": authorization_url}
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 def get_drive_link(file):
@@ -165,16 +151,14 @@ scan_jobs = {}
 # API Endpoints
 # ---------------------------
 @app.post("/api/scan", response_model=ScanResponse)
-async def start_scan(scan_request: ScanRequest, background_tasks: BackgroundTasks):
-    job_id = str(uuid.uuid4())
-    
-    # Add task to background
-    background_tasks.add_task(process_scan, job_id, scan_request.folder_id)
-    
-    return ScanResponse(
-        job_id=job_id,
-        message="Scan started"
-    )
+async def scan_folder(request: ScanRequest, background_tasks: BackgroundTasks):
+    """Start a folder scan."""
+    try:
+        job_id = str(uuid.uuid4())
+        background_tasks.add_task(process_scan, job_id, request.folder_id)
+        return ScanResponse(job_id=job_id, message="Scan started")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/scan/{job_id}/status")
 async def get_scan_status(job_id: str):
@@ -207,51 +191,20 @@ async def download_results(job_id: str):
         filename="google_drive_scan.csv"
     )
 
-@app.get("/oauth2callback", response_class=RedirectResponse)
+@app.get("/oauth2callback")
 async def oauth2callback(request: Request):
     """Handle the OAuth 2.0 callback from Google."""
     try:
-        # Get credentials from environment variables
-        client_id = os.getenv('GOOGLE_CLIENT_ID')
-        client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
-        redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
-        
-        # Get the authorization code from the request
         code = request.query_params.get("code")
         if not code:
             return RedirectResponse(url="https://google-drive-extractor.vercel.app?error=no_code")
         
-        try:
-            # Create flow object
-            flow = InstalledAppFlow.from_client_config(
-                {
-                    "web": {
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "redirect_uris": [redirect_uri],
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                    }
-                },
-                SCOPES,
-                redirect_uri=redirect_uri
-            )
-            
-            # Exchange authorization code for credentials
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-            
-            # Save credentials to memory (don't write to file in production)
-            token_data = creds.to_json()
-            
-            # Redirect back to frontend with success
-            return RedirectResponse(url="https://google-drive-extractor.vercel.app?status=success")
-            
-        except Exception as e:
-            # Log the error (you should implement proper logging)
-            print(f"OAuth error: {str(e)}")
-            return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error=oauth_error")
-            
+        flow = get_oauth_flow()
+        flow.fetch_token(code=code)
+        
+        # Store credentials in memory or session (implement your storage solution)
+        # For now, we'll redirect back to frontend
+        return RedirectResponse(url="https://google-drive-extractor.vercel.app?status=success")
     except Exception as e:
         return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error={str(e)}")
 
@@ -259,31 +212,26 @@ async def oauth2callback(request: Request):
 # Background Tasks
 # ---------------------------
 def process_scan(job_id: str, folder_id: str):
+    """Process the scan in the background."""
     scan_jobs[job_id] = {
         "status": "processing",
-        "message": "Authentication in progress",
+        "message": "Starting scan",
         "progress": 0
     }
     
     try:
-        # Authenticate
-        scan_jobs[job_id]["message"] = "Authenticating with Google Drive"
-        try:
-            creds = authenticate()
-            if isinstance(creds, str):  # If it's an authorization URL
-                scan_jobs[job_id]["status"] = "auth_required"
-                scan_jobs[job_id]["message"] = "Authentication required"
-                scan_jobs[job_id]["authorization_url"] = creds
-                return
-        except HTTPException as e:
-            if e.status_code == 401:  # Authentication required
-                scan_jobs[job_id]["status"] = "auth_required"
-                scan_jobs[job_id]["message"] = "Authentication required"
-                scan_jobs[job_id]["authorization_url"] = e.detail["authorization_url"]
-                return
-            raise e
-
-        service = build('drive', 'v3', credentials=creds)
+        # Start OAuth flow
+        auth_result = authenticate()
+        if "authorization_url" in auth_result:
+            scan_jobs[job_id].update({
+                "status": "auth_required",
+                "message": "Authentication required",
+                "authorization_url": auth_result["authorization_url"]
+            })
+            return
+            
+        # Build the service
+        service = build('drive', 'v3', credentials=auth_result.get("credentials"))
         
         # Scan Drive
         scan_jobs[job_id]["message"] = "Scanning Google Drive"
@@ -297,14 +245,18 @@ def process_scan(job_id: str, folder_id: str):
         export_to_csv(files, csv_file)
         
         # Complete
-        scan_jobs[job_id]["status"] = "completed"
-        scan_jobs[job_id]["message"] = f"Found {len(files)} files and folders"
-        scan_jobs[job_id]["progress"] = 100
-        scan_jobs[job_id]["file_count"] = len(files)
+        scan_jobs[job_id].update({
+            "status": "completed",
+            "message": f"Found {len(files)} files and folders",
+            "progress": 100,
+            "file_count": len(files)
+        })
         
     except Exception as e:
-        scan_jobs[job_id]["status"] = "failed"
-        scan_jobs[job_id]["message"] = f"Error: {str(e)}"
+        scan_jobs[job_id].update({
+            "status": "failed",
+            "message": f"Error: {str(e)}"
+        })
 
 if __name__ == "__main__":
     import uvicorn
