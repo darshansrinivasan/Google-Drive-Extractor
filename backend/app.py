@@ -5,10 +5,10 @@ from pydantic import BaseModel
 import os
 import csv
 import uuid
+import json
 from typing import List, Optional, Dict, Any
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
 app = FastAPI()
@@ -29,6 +29,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Store credentials in memory (not ideal for production, but works for now)
+credentials_store = {}
 
 # ---------------------------
 # Models
@@ -52,7 +55,7 @@ class ScanResult(BaseModel):
     total_count: int
 
 class AuthResponse(BaseModel):
-    url: str
+    authorization_url: str
 
 # ---------------------------
 # Google Drive Functions
@@ -82,15 +85,15 @@ def get_oauth_flow():
         redirect_uri=redirect_uri
     )
 
-def authenticate() -> Dict[str, Any]:
-    """Start the OAuth flow."""
+def start_oauth_flow() -> AuthResponse:
+    """Start the OAuth flow and return the authorization URL."""
     try:
         flow = get_oauth_flow()
         authorization_url, _ = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true'
         )
-        return {"authorization_url": authorization_url}
+        return AuthResponse(authorization_url=authorization_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -202,8 +205,10 @@ async def oauth2callback(request: Request):
         flow = get_oauth_flow()
         flow.fetch_token(code=code)
         
-        # Store credentials in memory or session (implement your storage solution)
-        # For now, we'll redirect back to frontend
+        # Store credentials in memory
+        creds_json = flow.credentials.to_json()
+        credentials_store['current'] = json.loads(creds_json)
+        
         return RedirectResponse(url="https://google-drive-extractor.vercel.app?status=success")
     except Exception as e:
         return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error={str(e)}")
@@ -220,18 +225,20 @@ def process_scan(job_id: str, folder_id: str):
     }
     
     try:
-        # Start OAuth flow
-        auth_result = authenticate()
-        if "authorization_url" in auth_result:
+        # Check if we have valid credentials
+        if 'current' not in credentials_store:
+            # Start OAuth flow
+            auth_response = start_oauth_flow()
             scan_jobs[job_id].update({
                 "status": "auth_required",
                 "message": "Authentication required",
-                "authorization_url": auth_result["authorization_url"]
+                "authorization_url": auth_response.authorization_url
             })
             return
             
-        # Build the service
-        service = build('drive', 'v3', credentials=auth_result.get("credentials"))
+        # Build the service using stored credentials
+        creds = Credentials.from_authorized_user_info(credentials_store['current'], SCOPES)
+        service = build('drive', 'v3', credentials=creds)
         
         # Scan Drive
         scan_jobs[job_id]["message"] = "Scanning Google Drive"
