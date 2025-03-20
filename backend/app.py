@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel
 import os
 import csv
@@ -53,6 +53,9 @@ class ScanResult(BaseModel):
     files: List[FileInfo]
     total_count: int
 
+class AuthResponse(BaseModel):
+    url: str
+
 # ---------------------------
 # Google Drive Functions
 # ---------------------------
@@ -70,43 +73,36 @@ def authenticate():
     redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
     
     try:
-        if os.path.exists(TOKEN_FILE):
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if client_id and client_secret:
+            # Use environment variables in production
+            flow = InstalledAppFlow.from_client_config(
+                {
+                    "web": {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uris": [redirect_uri],
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                },
+                SCOPES,
+                redirect_uri=redirect_uri
+            )
+            # Instead of run_local_server, we'll use the redirect flow
+            authorization_url, _ = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true'
+            )
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "message": "Authentication required",
+                    "authorization_url": authorization_url
+                }
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Google credentials not configured")
             
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if client_id and client_secret:
-                    # Use environment variables in production
-                    flow = InstalledAppFlow.from_client_config(
-                        {
-                            "web": {
-                                "client_id": client_id,
-                                "client_secret": client_secret,
-                                "redirect_uris": [redirect_uri],
-                                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                                "token_uri": "https://oauth2.googleapis.com/token",
-                            }
-                        },
-                        SCOPES,
-                        redirect_uri=redirect_uri
-                    )
-                    # Instead of run_local_server, we'll use the redirect flow
-                    authorization_url, _ = flow.authorization_url(
-                        access_type='offline',
-                        include_granted_scopes='true'
-                    )
-                    raise HTTPException(
-                        status_code=401,
-                        detail={
-                            "message": "Authentication required",
-                            "authorization_url": authorization_url
-                        }
-                    )
-                else:
-                    raise HTTPException(status_code=500, detail="Google credentials not configured")
-        return creds
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
@@ -223,33 +219,39 @@ async def oauth2callback(request: Request):
         # Get the authorization code from the request
         code = request.query_params.get("code")
         if not code:
-            raise HTTPException(status_code=400, detail="No authorization code provided")
+            return RedirectResponse(url="https://google-drive-extractor.vercel.app?error=no_code")
         
-        # Create flow object
-        flow = InstalledAppFlow.from_client_config(
-            {
-                "web": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "redirect_uris": [redirect_uri],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            },
-            SCOPES,
-            redirect_uri=redirect_uri
-        )
-        
-        # Exchange authorization code for credentials
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        
-        # Save credentials
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
-        
-        # Redirect back to frontend
-        return RedirectResponse(url="https://google-drive-extractor.vercel.app")
+        try:
+            # Create flow object
+            flow = InstalledAppFlow.from_client_config(
+                {
+                    "web": {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "redirect_uris": [redirect_uri],
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                },
+                SCOPES,
+                redirect_uri=redirect_uri
+            )
+            
+            # Exchange authorization code for credentials
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            
+            # Save credentials to memory (don't write to file in production)
+            token_data = creds.to_json()
+            
+            # Redirect back to frontend with success
+            return RedirectResponse(url="https://google-drive-extractor.vercel.app?status=success")
+            
+        except Exception as e:
+            # Log the error (you should implement proper logging)
+            print(f"OAuth error: {str(e)}")
+            return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error=oauth_error")
+            
     except Exception as e:
         return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error={str(e)}")
 
