@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import os
 from dotenv import load_dotenv
 import csv
@@ -11,6 +11,13 @@ from typing import List, Optional, Dict, Any
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
+import logging
+from fastapi.middleware.throttling import ThrottlingMiddleware
+from fastapi_sessions import SessionMiddleware
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -41,6 +48,11 @@ credentials_store = {}
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI')
+
+# Log configuration on startup
+logger.info("Starting application...")
+logger.info(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
+logger.info(f"CORS origins: {origins}")
 
 if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
     print("Warning: Google OAuth credentials not properly configured!")
@@ -222,6 +234,25 @@ async def oauth2callback(request: Request):
         print(f"OAuth callback error: {str(e)}")
         return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error={str(e)}")
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    try:
+        return {
+            "status": "healthy",
+            "environment": os.getenv('ENVIRONMENT', 'production'),
+            "google_auth": {
+                "client_id_configured": bool(GOOGLE_CLIENT_ID),
+                "client_secret_configured": bool(GOOGLE_CLIENT_SECRET),
+                "redirect_uri_configured": bool(GOOGLE_REDIRECT_URI),
+                "has_credentials": "current" in credentials_store
+            },
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ---------------------------
 # Background Tasks
 # ---------------------------
@@ -278,6 +309,26 @@ def process_scan(job_id: str, folder_id: str):
             "status": "failed",
             "message": f"Error: {str(e)}"
         })
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests."""
+    logger.info(f"Request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {str(e)}")
+        raise
+
+app.add_middleware(
+    ThrottlingMiddleware,
+    rate_limit=100,  # requests
+    time_window=60   # seconds
+)
+
+app.add_middleware(SessionMiddleware, secret_key="your-secret-key")
 
 if __name__ == "__main__":
     import uvicorn
