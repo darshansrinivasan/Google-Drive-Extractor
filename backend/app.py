@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel
 import os
+from dotenv import load_dotenv
 import csv
 import uuid
 import json
@@ -10,6 +11,9 @@ from typing import List, Optional, Dict, Any
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
 
@@ -32,6 +36,16 @@ app.add_middleware(
 
 # Store credentials in memory (not ideal for production, but works for now)
 credentials_store = {}
+
+# Get Google OAuth credentials from environment variables
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
+GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI')
+
+if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
+    print("Warning: Google OAuth credentials not properly configured!")
+    print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
+    print(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
 
 # ---------------------------
 # Models
@@ -66,7 +80,7 @@ def get_oauth_flow():
     """Create and return OAuth flow object."""
     client_id = os.getenv('GOOGLE_CLIENT_ID')
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
-    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'https://google-drive-scanner-backend.onrender.com/oauth2callback')
+    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI')
     
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="Google credentials not configured")
@@ -84,18 +98,6 @@ def get_oauth_flow():
         SCOPES,
         redirect_uri=redirect_uri
     )
-
-def start_oauth_flow() -> AuthResponse:
-    """Start the OAuth flow and return the authorization URL."""
-    try:
-        flow = get_oauth_flow()
-        authorization_url, _ = flow.authorization_url(
-            access_type='offline',
-            include_granted_scopes='true'
-        )
-        return AuthResponse(authorization_url=authorization_url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 def get_drive_link(file):
     """Returns the Google Drive link for the given file ID."""
@@ -165,15 +167,21 @@ async def scan_folder(request: ScanRequest, background_tasks: BackgroundTasks):
 
 @app.get("/api/scan/{job_id}/status")
 async def get_scan_status(job_id: str):
+    """Get the status of a scan job."""
     if job_id not in scan_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
     job = scan_jobs[job_id]
-    return {
+    response = {
         "status": job["status"],
         "message": job["message"],
         "progress": job.get("progress", 0)
     }
+    
+    if "authorization_url" in job:
+        response["authorization_url"] = job["authorization_url"]
+        
+    return response
 
 @app.get("/api/scan/{job_id}/download")
 async def download_results(job_id: str):
@@ -211,6 +219,7 @@ async def oauth2callback(request: Request):
         
         return RedirectResponse(url="https://google-drive-extractor.vercel.app?status=success")
     except Exception as e:
+        print(f"OAuth callback error: {str(e)}")
         return RedirectResponse(url=f"https://google-drive-extractor.vercel.app?error={str(e)}")
 
 # ---------------------------
@@ -228,11 +237,15 @@ def process_scan(job_id: str, folder_id: str):
         # Check if we have valid credentials
         if 'current' not in credentials_store:
             # Start OAuth flow
-            auth_response = start_oauth_flow()
+            flow = get_oauth_flow()
+            authorization_url, _ = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true'
+            )
             scan_jobs[job_id].update({
                 "status": "auth_required",
                 "message": "Authentication required",
-                "authorization_url": auth_response.authorization_url
+                "authorization_url": authorization_url
             })
             return
             
@@ -260,6 +273,7 @@ def process_scan(job_id: str, folder_id: str):
         })
         
     except Exception as e:
+        print(f"Scan error: {str(e)}")
         scan_jobs[job_id].update({
             "status": "failed",
             "message": f"Error: {str(e)}"
