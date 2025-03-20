@@ -55,9 +55,9 @@ logger.info(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
 logger.info(f"CORS origins: {origins}")
 
 if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
-    print("Warning: Google OAuth credentials not properly configured!")
-    print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
-    print(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
+    logger.warning("Google OAuth credentials not properly configured!")
+    logger.warning(f"GOOGLE_CLIENT_ID configured: {bool(GOOGLE_CLIENT_ID)}")
+    logger.warning(f"GOOGLE_REDIRECT_URI configured: {bool(GOOGLE_REDIRECT_URI)}")
 
 # ---------------------------
 # Models
@@ -321,12 +321,6 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         logger.error(f"Request failed: {str(e)}")
         raise
-
-app.add_middleware(
-    ThrottlingMiddleware,
-    rate_limit=100,  # requests
-    time_window=60   # seconds
-)
 
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key")
 

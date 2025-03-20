@@ -7,3 +7,5 @@ google-api-python-client==2.108.0
 python-multipart==0.0.6
 pydantic==2.5.2
 requests==2.31.0
+itsdangerous==2.1.2
+python-jose[cryptography]==3.3.0
