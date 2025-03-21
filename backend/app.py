@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel, validator
 import os
 from dotenv import load_dotenv
@@ -20,7 +21,13 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(
+    title="Google Drive Scanner API",
+    description="API for scanning and exporting Google Drive folder contents",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None
+)
 
 # Configure CORS
 origins = [
@@ -250,6 +257,33 @@ async def health_check():
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+async def root():
+    """Root endpoint that redirects to API documentation."""
+    return {
+        "message": "Welcome to Google Drive Scanner API",
+        "version": "1.0.0",
+        "endpoints": {
+            "docs": "/docs",
+            "health": "/health",
+            "scan": "/api/scan",
+            "scan_status": "/api/scan/{job_id}/status",
+            "scan_download": "/api/scan/{job_id}/download",
+            "oauth_callback": "/oauth2callback"
+        },
+        "documentation": "Visit /docs for complete API documentation"
+    }
+
+@app.get("/docs")
+async def custom_swagger_ui_html():
+    """Custom Swagger UI documentation."""
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="Google Drive Scanner API Documentation",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    )
 
 # ---------------------------
 # Background Tasks
