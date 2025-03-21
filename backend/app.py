@@ -29,25 +29,19 @@ app = FastAPI(
     redoc_url=None
 )
 
-# Configure CORS
-origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:3002",
-    "https://google-drive-extractor.vercel.app",
-    "https://google-drive-scanner-backend.onrender.com"
-]
-
+# Configure CORS with more permissive settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+    expose_headers=["*"]  # Exposes all headers
 )
 
 # Store credentials in memory (not ideal for production, but works for now)
 credentials_store = {}
+scan_jobs = {}
 
 # Get Google OAuth credentials from environment variables
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
@@ -57,7 +51,6 @@ GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI')
 # Log configuration on startup
 logger.info("Starting application...")
 logger.info(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
-logger.info(f"CORS origins: {origins}")
 
 if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
     logger.warning("Google OAuth credentials not properly configured!")
@@ -166,13 +159,15 @@ def export_to_csv(files, output_file):
         for file in files:
             writer.writerow(file)
 
-# Job storage
-scan_jobs = {}
-
 # ---------------------------
 # API Endpoints
 # ---------------------------
-@app.post("/api/scan", response_model=ScanResponse)
+@app.options("/api/scan")
+async def options_scan():
+    """Handle OPTIONS request for /api/scan endpoint."""
+    return {}
+
+@app.post("/api/scan")
 async def scan_folder(request: ScanRequest, background_tasks: BackgroundTasks):
     """Start a folder scan."""
     try:
@@ -180,6 +175,7 @@ async def scan_folder(request: ScanRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(process_scan, job_id, request.folder_id)
         return ScanResponse(job_id=job_id, message="Scan started")
     except Exception as e:
+        logger.error(f"Scan error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/scan/{job_id}/status")
