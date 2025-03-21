@@ -12,8 +12,6 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
 import logging
-from fastapi.middleware.throttling import ThrottlingMiddleware
-from fastapi_sessions import SessionMiddleware
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -321,8 +319,6 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         logger.error(f"Request failed: {str(e)}")
         raise
-
-app.add_middleware(SessionMiddleware, secret_key="your-secret-key")
 
 if __name__ == "__main__":
     import uvicorn
